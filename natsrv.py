@@ -26,12 +26,10 @@ def _timestamp():
 	return _b(time.strftime('[%Y-%m-%d %H:%M:%S] ', time.localtime(time.time())), 'utf-8')
 
 class Tunnel():
-	def __init__(self, fds, fdc, caddr, recv_b, flag):
+	def __init__(self, fds, fdc, caddr):
 		self.fds = fds
 		self.fdc = fdc
 		self.done = threading.Event()
-		self.flag = flag
-		self.recv_b = recv_b
 		self.t = None
 	def _cleanup(self):
 		if self.fdc: self.fdc.close()
@@ -39,7 +37,6 @@ class Tunnel():
 		self.fdc = None
 		self.fds = None
 	def _threadfunc(self):
-		sent_byte = self.flag
 		while True:
 			a,b,c = select.select([self.fds, self.fdc], [], [])
 			try:
@@ -49,18 +46,10 @@ class Tunnel():
 			if len(buf) == 0:
 				break
 			try:
-				if sent_byte:
-					if a[0] == self.fds:
-						self.fdc.send(buf)
-					else:
-						self.fds.send(buf)
+				if a[0] == self.fds:
+					self.fdc.send(buf)
 				else:
-					if a[0] == self.fds:
-						self.fdc.send(buf)
-						sent_byte = True
-					else:
-						self.fds.send(buf)
-						sent_byte = True
+					self.fds.send(buf)
 			except:
 				break
 		self._cleanup()
@@ -113,7 +102,7 @@ class NATClient():
 				addr=l.rstrip(b'\n').split(b':')[1]
 				local_conn = rocksock.Rocksock(host=self.localserv_ip, port=self.localserv_port)
 				local_conn.connect()
-				thread = Tunnel(local_conn.sock, self.next_csock.sock, addr, b'\xDE', False)
+				thread = Tunnel(local_conn.sock, self.next_csock.sock, addr)
 				thread.start()
 				self.threads.append(thread)
 				self.next_csock = self._setup_sock(b'skt')
@@ -197,7 +186,7 @@ class NATSrv():
 			print('No magic( tmp=', tmp)
 			self.control_socket.send(b"CONN:%s\n"%_format_addr(addr))
 
-			thread = Tunnel(self.next_upstream_socket, conn, addr, tmp, True)
+			thread = Tunnel(self.next_upstream_socket, conn, addr)
 			thread.start()
 			self.threads.append(thread)
 			self.next_upstream_socket = None
