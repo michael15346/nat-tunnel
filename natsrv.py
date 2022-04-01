@@ -26,10 +26,12 @@ def _timestamp():
 	return _b(time.strftime('[%Y-%m-%d %H:%M:%S] ', time.localtime(time.time())), 'utf-8')
 
 class Tunnel():
-	def __init__(self, fds, fdc, caddr):
+	def __init__(self, fds, fdc, caddr, recv_b, flag):
 		self.fds = fds
 		self.fdc = fdc
 		self.done = threading.Event()
+		self.flag = flag
+		self.recv_b = recv_b
 		self.t = None
 	def _cleanup(self):
 		if self.fdc: self.fdc.close()
@@ -37,6 +39,7 @@ class Tunnel():
 		self.fdc = None
 		self.fds = None
 	def _threadfunc(self):
+		sent_byte = self.flag
 		while True:
 			a,b,c = select.select([self.fds, self.fdc], [], [])
 			try:
@@ -46,10 +49,18 @@ class Tunnel():
 			if len(buf) == 0:
 				break
 			try:
-				if a[0] == self.fds:
-					self.fdc.send(buf)
+				if sent_byte:
+					if a[0] == self.fds:
+						self.fdc.send(buf)
+					else:
+						self.fds.send(buf)
 				else:
-					self.fds.send(buf)
+					if a[0] == self.fds:
+						self.fdc.send(buf)
+						sent_byte = True
+					else:
+						self.fds.send(buf)
+						sent_byte = True
 			except:
 				break
 		self._cleanup()
@@ -77,6 +88,7 @@ class NATClient():
 	def _setup_sock(self, cmd):
 		sock = rocksock.Rocksock(host=self.upstream_ip, port=self.upstream_port)
 		sock.connect()
+		sock.send(b'\xDE')
 		nonce = sock.recv(NONCE_LEN*2 + 1).rstrip(b'\n')
 		sock.send(_hash(cmd + self.secret + nonce) + b'\n')
 		return sock
@@ -101,7 +113,7 @@ class NATClient():
 				addr=l.rstrip(b'\n').split(b':')[1]
 				local_conn = rocksock.Rocksock(host=self.localserv_ip, port=self.localserv_port)
 				local_conn.connect()
-				thread = Tunnel(local_conn.sock, self.next_csock.sock, addr)
+				thread = Tunnel(local_conn.sock, self.next_csock.sock, addr, b'\xDE', False)
 				thread.start()
 				self.threads.append(thread)
 				self.next_csock = self._setup_sock(b'skt')
@@ -154,34 +166,49 @@ class NATSrv():
 		self.su = self._setup_listen_socket(self.up_ip, self.up_port)
 		self.sc = self._setup_listen_socket(self.client_ip, self.client_port)
 
-	def wait_conn_up(self):
-		conn, addr = self.su.accept()
-		nonce = _get_nonce()
-		print(_timestamp() + b"CONN: %s (nonce: %s) ... "%(_format_addr(addr), nonce), end='')
-		conn.send(nonce + b'\n')
-		cmd = conn.recv(1 + self.hashlen).rstrip(b'\n')
-		if cmd == _hash(b'adm' + self.secret + nonce):
-			if self.control_socket:
-				self.control_socket.close()
-			self.control_socket = conn
-			print("OK (admin)")
-		elif cmd == _hash(b'skt' + self.secret + nonce):
-			print("OK (tunnel)")
-			if not self.control_socket:
-				conn.close()
-			else:
-				self.next_upstream_socket = conn
+	def wait_conn_up(self, flag):
+		if flag:
+			tmp = self.conn_su.recv(1)
 		else:
-			print("rejected!")
-			conn.close()
+			tmp = b''
+		if flag and (tmp == b'\xDE'):
+			print('Magic! tmp=', tmp)
+			nonce = _get_nonce()
+			print(_timestamp() + b"CONN: %s (nonce: %s) ... "%(_format_addr(self.addr_su), nonce), end='')
+			self.conn_su.send(nonce + b'\n')
+			cmd = self.conn_su.recv(1 + self.hashlen).rstrip(b'\n')
+			if cmd == _hash(b'adm' + self.secret + nonce):
+				if self.control_socket:
+					self.control_socket.close()
+				self.control_socket = self.conn_su
+				print("OK (admin)")
+			elif cmd == _hash(b'skt' + self.secret + nonce):
+				print("OK (tunnel)")
+				if not self.control_socket:
+					self.conn_su.close()
+				else:
+					self.next_upstream_socket = self.conn_su
+			else:
+				print("rejected!")
+				self.conn_su.close()
+		else:
+			
+			conn, addr = self.sc.accept()
+			print('No magic( tmp=', tmp)
+			self.control_socket.send(b"CONN:%s\n"%_format_addr(addr))
 
-	def wait_conn_client(self):
+			thread = Tunnel(self.next_upstream_socket, conn, addr, tmp, True)
+			thread.start()
+			self.threads.append(thread)
+			self.next_upstream_socket = None
+
+	'''def wait_conn_client(self):
 		conn, addr = self.sc.accept()
 		self.control_socket.send(b"CONN:%s\n"%_format_addr(addr))
 		thread = Tunnel(self.next_upstream_socket, conn, addr)
 		thread.start()
 		self.threads.append(thread)
-		self.next_upstream_socket = None
+		self.next_upstream_socket = None'''
 
 	def doit(self):
 		while True:
@@ -192,10 +219,14 @@ class NATSrv():
 					self.threads.pop(i)
 				else:
 					i += 1
+					
+			
 			if not self.control_socket:
-				self.wait_conn_up()
+				self.conn_su, self.addr_su = self.su.accept()
+				self.wait_conn_up(True)
 			if not self.next_upstream_socket:
-				self.wait_conn_up()
+				self.conn_su, self.addr_su = self.su.accept()
+				self.wait_conn_up(True)
 			if self.control_socket and self.next_upstream_socket:
 				a,b,c = select.select([self.sc, self.control_socket, ], [], [])
 				if self.control_socket in a:
@@ -209,7 +240,7 @@ class NATSrv():
 					self.next_upstream_socket = None
 					continue
 				if self.sc in a:
-					self.wait_conn_client()
+					self.wait_conn_up(False)
 
 
 if __name__ == "__main__":
