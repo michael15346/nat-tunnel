@@ -25,9 +25,14 @@ You want to make it available on your cloud server/VPS/etc's public
 IP on port 7000.
 We use port 8000 on the cloud server for the control channel.
 
+This is a fork of NAT Tunnel which, through some dirty hax, allows
+to bind both public and admin interfaces of the server to the same 
+port (and breaks everything else). Useful for some instances where 
+you you're only allowed to bind to a specific port.
+
 Server:
 
-    natsrv.py --mode server --secret s3cretP4ss --public 0.0.0.0:7000 --admin 0.0.0.0:8000
+    natsrv.py --mode server --secret s3cretP4ss --public 0.0.0.0:8000 --admin 0.0.0.0:8000
 
 Client:
 
