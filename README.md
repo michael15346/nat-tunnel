@@ -1,4 +1,4 @@
-NAT Tunnel v0.01
+NAT Tunnel v0.02
 ----------------
 If you have access to a server with public IP and unfiltered ports
 you can run NAT Tunnel (NT)  server on the server, and NT client
